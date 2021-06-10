@@ -21,7 +21,7 @@ import config_service_pb2
 import sdk_common_pb2
 
 from pygnmi.client import gNMIclient
-from jinja2 import Environment, PackageLoader
+from jinja2 import Environment, FileSystemLoader
 
 from logging.handlers import RotatingFileHandler
 
@@ -43,7 +43,7 @@ pushed_routes = 0
 # Also connect through gNMI
 gnmic = gNMIclient(target=("127.0.0.1", 57400), username="admin",
                         password="admin", insecure=True)
-jinja2_env = Environment(loader=PackageLoader('auto-config-agent')) # 'templates' folder
+jinja2_env = Environment(loader=FileSystemLoader('/home/appmgr/templates/'))
 
 ############################################################
 ## Subscribe to required event
