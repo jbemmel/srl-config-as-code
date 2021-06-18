@@ -20,7 +20,8 @@ import lldp_service_pb2
 import config_service_pb2
 import sdk_common_pb2
 
-from pygnmi.client import gNMIclient
+from nsenter import Namespace
+from pygnmi.client import gNMIclient, telemetryParser
 from jinja2 import Environment, FileSystemLoader
 
 from logging.handlers import RotatingFileHandler
@@ -40,9 +41,6 @@ metadata = [('agent_name', agent_name)]
 stub = sdk_service_pb2_grpc.SdkMgrServiceStub(channel)
 pushed_routes = 0
 
-# Also connect through gNMI
-gnmic = gNMIclient(target=("127.0.0.1", 57400), username="admin",
-                        password="admin", insecure=True)
 jinja2_env = Environment(loader=FileSystemLoader('/home/appmgr/templates/'))
 
 ############################################################
@@ -76,6 +74,7 @@ def Subscribe_Notifications(stream_id):
     # Subscribe to config changes, first
     Subscribe(stream_id, 'cfg')
 
+    Gnmi_subscribe_bgp_changes()
     ##Subscribe to LLDP Neighbor Notifications
     ## Subscribe(stream_id, 'lldp')
 
@@ -296,6 +295,30 @@ def script_update_interface(role,name,ip,peer,peer_ip,_as,router_id,peer_as_min,
        logging.info(f'Config result: {config}->{result}')
     except Exception as e:
        logging.error(f'Exception caught in script_update_interface :: {e}')
+
+def Gnmi_subscribe_bgp_changes():
+    subscribe = {
+            'subscription': [
+                {
+                    'path': '/srl_nokia-network-instance:network-instance[name=*]/protocols/srl_nokia-bgp:bgp/neighbor[peer-address=*]/admin-state',
+                    'mode': 'sample',
+                    'sample_interval': 10000000000
+                }
+            ],
+            'use_aliases': False,
+            'mode': 'stream',
+            'encoding': 'json'
+        }
+    try:
+      with Namespace('/var/run/netns/srbase-mgmt', 'net'):
+        with gNMIclient(target=("127.0.0.1", 57400), username="admin",
+                            password="admin", insecure=True) as c:
+          telemetry_stream = c.subscribe(subscribe=subscribe)
+
+          for entry in telemetry_stream:
+             logging.info(f"GOT BGP change event :: {telemetryParser(entry)}")
+    except Exception as e:
+      logging.error(f'Exception caught in gNMI :: {e}')
 
 class State(object):
     def __init__(self):
