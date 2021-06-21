@@ -22,14 +22,20 @@ function main()
     # source the virtual-environment, which is used to ensure the correct python packages are installed,
     # and the correct python version is used
     source "${virtual_env}"
-    export  PYTHONPATH="$PYTHONPATH:/etc/opt/srlinux/appmgr/:/opt/srlinux/bin:/opt/rh/rh-python36/root/usr/lib/python3.6/site-packages/sdk_protos"
+    export PYTHONPATH="$PYTHONPATH:/etc/opt/srlinux/appmgr/:/opt/srlinux/bin:/opt/rh/rh-python36/root/usr/lib/python3.6/site-packages/sdk_protos"
+
+    # Could install custom packages in /usr/local/lib and include that here
 
     export http_proxy=""
     export https_proxy=""
     export no_proxy=""
+
+    # [[ ! -f /var/run/netns/srbase-mgmt ]] && sleep 10
+    # /usr/sbin/ip netns exec srbase-mgmt python3 ${main_module} &
+    # Now using Unix socket to connect locally
     python3 ${main_module} &
 
-    child=$! 
+    child=$!
     wait "$child"
 
 }

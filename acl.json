@@ -1,0 +1,14 @@
+{
+  "match": {
+        "protocol": "tcp",
+        "source-ip": {
+            "prefix": "1.2.3.4/32"
+        },
+        "destination-port": {
+            "value": 179
+        }
+      },
+  "action": {
+    "accept": { }
+  }
+}

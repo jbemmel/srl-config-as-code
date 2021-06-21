@@ -5,8 +5,11 @@ COPY 42_sr_copy_custom_appmgr.sh /opt/srlinux/bin/bootscript/
 # Install pyGNMI and Jinja2 to /usr/local/lib/python3.6/site-packages
 RUN sudo yum install -y python3-pip gcc-c++ && \
     sudo python3 -m pip install pip --upgrade && \
-    sudo python3 -m pip install pygnmi jinja2 nsenter \
+    sudo python3 -m pip install pygnmi jinja2 \
       --target /opt/srlinux/python/virtual-env/lib/python3.6/site-packages/
+
+# Fix pygnmi to support Unix socket paths
+COPY pygnmi_client.py /opt/srlinux/python/virtual-env/lib/python3.6/site-packages/pygnmi/client.py
 
 # Update PYTHONPATH to include our custom packages
 # RUN sudo sed -i 's|export PATH=/usr/sbin:$PATH|export PATH=/usr/sbin:$PATH;export PYTHONPATH=/usr/local/lib/python3.6/site-packages:$PYTHONPATH|g' /opt/srlinux/bin/sr_cli

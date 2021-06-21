@@ -20,7 +20,7 @@ import lldp_service_pb2
 import config_service_pb2
 import sdk_common_pb2
 
-from nsenter import Namespace
+# from nsenter import Namespace
 from pygnmi.client import gNMIclient, telemetryParser
 from jinja2 import Environment, FileSystemLoader
 
@@ -35,8 +35,8 @@ agent_name='auto_config_agent'
 ## Open a GRPC channel to connect to sdk_mgr on the dut
 ## sdk_mgr will be listening on 50053
 ############################################################
-#channel = grpc.insecure_channel('unix:///opt/srlinux/var/run/sr_sdk_service_manager:50053')
-channel = grpc.insecure_channel('127.0.0.1:50053')
+channel = grpc.insecure_channel('unix:///opt/srlinux/var/run/sr_sdk_service_manager:50053')
+# channel = grpc.insecure_channel('127.0.0.1:50053')
 metadata = [('agent_name', agent_name)]
 stub = sdk_service_pb2_grpc.SdkMgrServiceStub(channel)
 pushed_routes = 0
@@ -74,7 +74,6 @@ def Subscribe_Notifications(stream_id):
     # Subscribe to config changes, first
     Subscribe(stream_id, 'cfg')
 
-    Gnmi_subscribe_bgp_changes()
     ##Subscribe to LLDP Neighbor Notifications
     ## Subscribe(stream_id, 'lldp')
 
@@ -296,29 +295,60 @@ def script_update_interface(role,name,ip,peer,peer_ip,_as,router_id,peer_as_min,
     except Exception as e:
        logging.error(f'Exception caught in script_update_interface :: {e}')
 
-def Gnmi_subscribe_bgp_changes():
+def Gnmi_subscribe_bgp_changes(state):
     subscribe = {
             'subscription': [
                 {
-                    'path': '/srl_nokia-network-instance:network-instance[name=*]/protocols/srl_nokia-bgp:bgp/neighbor[peer-address=*]/admin-state',
-                    'mode': 'sample',
-                    'sample_interval': 10000000000
+                    # 'path': '/srl_nokia-network-instance:network-instance[name=*]/protocols/srl_nokia-bgp:bgp/neighbor[peer-address=*]/admin-state',
+                    'path': '/network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/admin-state',
+                    'mode': 'on_change',
                 }
             ],
             'use_aliases': False,
             'mode': 'stream',
             'encoding': 'json'
         }
+    _bgp = re.compile( '^network-instance[name=(.*)]/protocols/bgp/neighbor[peer-address=(.*)]/admin-state$' )
     try:
-      with Namespace('/var/run/netns/srbase-mgmt', 'net'):
-        with gNMIclient(target=("127.0.0.1", 57400), username="admin",
+      # with Namespace('/var/run/netns/srbase-mgmt', 'net'):
+        with gNMIclient(target=('unix:///opt/srlinux/var/run/sr_gnmi_server', 57400), username="admin",
                             password="admin", insecure=True) as c:
           telemetry_stream = c.subscribe(subscribe=subscribe)
 
           for entry in telemetry_stream:
              logging.info(f"GOT BGP change event :: {telemetryParser(entry)}")
+             for e in entry.update.update:
+               params = _bgp.match( e.path )
+               if params:
+                   _net = params.groups()[0]
+                   _peer_ip = params.groups()[1]
+                   logging.info(f"network-instance {_net} peer {_peer_ip} :: {e.val}")
+                   if e.val == "enabled":
+                      Add_ACL(c,state.acl_seq,_peer_ip)
+                      state.acl_seq += 1
+        logging.info("Leaving BGP event loop")
     except Exception as e:
       logging.error(f'Exception caught in gNMI :: {e}')
+
+def Add_ACL(gnmi,acl_seq,peer_ip):
+    acl_entry = {
+      "match": {
+        "protocol": "tcp",
+        "source-ip": {
+            "prefix": peer_ip + '/32'
+        },
+        "destination-port": {
+            "operator": "eq",
+            "value": 179
+        }
+      },
+      "action": {
+        "accept": { }
+      }
+    }
+    update = [( f'/acl/cpm-filter/ipv4-filter/entry[sequence-id={acl_seq}]',
+                json.dumps(acl_entry) )]
+    gnmi.set( encoding='json_ietf', update=update )
 
 class State(object):
     def __init__(self):
@@ -357,6 +387,8 @@ def Run():
     stream_response = sub_stub.NotificationStream(stream_request, metadata=metadata)
 
     state = State()
+    Gnmi_subscribe_bgp_changes(state)
+
     count = 1
     lldp_subscribed = False
     try:
