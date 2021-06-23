@@ -1345,7 +1345,18 @@
         {
           "name": "lo0.0"
         }
-      ]
+      ],
+      "protocols": {
+        "srl_nokia-bgp:bgp": {
+          "admin-state": "disable",
+          "autonomous-system": 65001,
+          "router-id": "1.1.0.1",
+          "ebgp-default-policy": {
+           "import-reject-all": false,
+           "export-reject-all": false
+          }
+	}
+      }
     },
     {
       "name": "mgmt",

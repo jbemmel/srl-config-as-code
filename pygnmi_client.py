@@ -163,7 +163,7 @@ class gNMIclient(object):
             self.__capabilities = response
             return response
 
-        except grpc._channel._InactiveRpcError as err:
+        except grpc.RpcError as err:
             print(f"Host: {self.__target_path}\nError: {err.details()}")
             logging.critical(f"GRPC ERROR Host: {self.__target_path}, Error: {err.details()}")
             raise Exception (err)
@@ -320,7 +320,7 @@ class gNMIclient(object):
 
             return response
 
-        except grpc._channel._InactiveRpcError as err:
+        except grpc.RpcError as err:
             print(f"Host: {self.__target_path}\nError: {err.details()}")
             logging.critical(f"GRPC ERROR Host: {self.__target_path}, Error: {err.details()}")
             raise Exception (err)
@@ -490,7 +490,7 @@ class gNMIclient(object):
                 logging.error('Failed parsing the SetResponse.')
                 return None
 
-        except grpc._channel._InactiveRpcError as err:
+        except grpc.RpcError as err:
             print(f"Host: {self.__target_path}\nError: {err.details()}")
             logging.critical(f"GRPC ERROR Host: {self.__target_path}, Error: {err.details()}")
             raise Exception (err)
@@ -502,7 +502,7 @@ class gNMIclient(object):
 
     def subscribe(self, subscribe: dict = None, poll: bool = False, aliases: list = None, timeout: float = 0.0):
         """
-        Implentation of the subsrcibe gNMI RPC to pool
+        Implementation of the subscribe gNMI RPC to pool
         """
         logging.info(f'Collecting Telemetry...')
 
@@ -517,7 +517,7 @@ class gNMIclient(object):
                     gnmi_message_request = SubscribeRequest(poll=request)
 
             else:
-                logging.error('Subscribe pool request is specificed, but the value is not boolean.')
+                logging.error('Subscribe poll request is specificed, but the value is not boolean.')
 
         if aliases:
             if isinstance(aliases, list):

@@ -289,9 +289,18 @@ def script_update_interface(role,name,ip,peer,peer_ip,_as,router_id,peer_as_min,
 
        # Use Jinja2 template per role
        j2_template = jinja2_env.get_template(role+'.j2')
-       config = j2_template.render(name=name,ip=ip) # TODO pass all variables
-       result = gnmic.set(update=m, encoding='json_ietf')
-       logging.info(f'Config result: {config}->{result}')
+       event = {
+         "type" : "lldp",
+         "data" : {
+           "ip" : ip
+         }
+       }
+       config = j2_template.render(name=name,event=event) # TODO pass all variables
+       with gNMIclient(target=('unix:///opt/srlinux/var/run/sr_gnmi_server', 57400), username="admin",
+                           password="admin", insecure=True) as c:
+          result = c.set(update=list(json.loads(config).items()),
+                         encoding='json_ietf')
+          logging.info(f'Config result: {config}->{result}')
     except Exception as e:
        logging.error(f'Exception caught in script_update_interface :: {e}')
 
@@ -300,35 +309,50 @@ def Gnmi_subscribe_bgp_changes(state):
             'subscription': [
                 {
                     # 'path': '/srl_nokia-network-instance:network-instance[name=*]/protocols/srl_nokia-bgp:bgp/neighbor[peer-address=*]/admin-state',
+                    # Possible to subscribe without '/admin-state', but then too many events
+                    # Like this, no 'delete' is received when the neighbor is deleted
                     'path': '/network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/admin-state',
                     'mode': 'on_change',
+                    # 'heartbeat_interval': 10 * 1000000000 # ns between, i.e. 10s
+                    # Mode 'sample' results in polling
+                    # 'mode': 'sample',
+                    # 'sample_interval': 10 * 1000000000 # ns between samples, i.e. 10s
                 }
             ],
             'use_aliases': False,
             'mode': 'stream',
             'encoding': 'json'
         }
-    _bgp = re.compile( '^network-instance[name=(.*)]/protocols/bgp/neighbor[peer-address=(.*)]/admin-state$' )
-    try:
-      # with Namespace('/var/run/netns/srbase-mgmt', 'net'):
-        with gNMIclient(target=('unix:///opt/srlinux/var/run/sr_gnmi_server', 57400), username="admin",
-                            password="admin", insecure=True) as c:
-          telemetry_stream = c.subscribe(subscribe=subscribe)
+    # _bgp = re.compile( '^network-instance\[name=(.*)\]/protocols/bgp/neighbor\[peer-address=(.*)\]/admin-state$' )
 
-          for entry in telemetry_stream:
-             logging.info(f"GOT BGP change event :: {telemetryParser(entry)}")
-             for e in entry.update.update:
-               params = _bgp.match( e.path )
-               if params:
-                   _net = params.groups()[0]
-                   _peer_ip = params.groups()[1]
-                   logging.info(f"network-instance {_net} peer {_peer_ip} :: {e.val}")
-                   if e.val == "enabled":
-                      Add_ACL(c,state.acl_seq,_peer_ip)
-                      state.acl_seq += 1
-        logging.info("Leaving BGP event loop")
-    except Exception as e:
-      logging.error(f'Exception caught in gNMI :: {e}')
+    # with Namespace('/var/run/netns/srbase-mgmt', 'net'):
+    with gNMIclient(target=('unix:///opt/srlinux/var/run/sr_gnmi_server', 57400), username="admin",
+                            password="admin", insecure=True) as c:
+      telemetry_stream = c.subscribe(subscribe=subscribe)
+      for m in telemetry_stream:
+        try:
+          parsed = telemetryParser(m)
+          logging.info(f"GOT BGP change event :: {m} parsed={parsed}")
+          if m.HasField('update'):
+            # XXX gets update.delete for deletes, but not when subscribing to /admin-state
+            for u in m.update.update:
+               if u.path and u.path.elem:
+                   for e in u.path.elem:
+                      logging.info(f"Processing path elem {e} name='{e.name}'")
+                      if e.name == "neighbor":
+                         for n,v in e.key.items():
+                             logging.info(f"n={n} v={v}")
+                             if n=="peer-address":
+                                _peer_ip = v
+                                logging.info(f"neighbor {_peer_ip}")
+                                if u.val.string_val == "enable":
+                                   Add_ACL(c,state.acl_seq,_peer_ip)
+                                   state.acl_seq += 1
+                         break
+
+        except Exception as e:
+          logging.error(f'Exception caught in gNMI :: {e}')
+    logging.info("Leaving BGP event loop")
 
 def Add_ACL(gnmi,acl_seq,peer_ip):
     acl_entry = {
@@ -346,13 +370,14 @@ def Add_ACL(gnmi,acl_seq,peer_ip):
         "accept": { }
       }
     }
-    update = [( f'/acl/cpm-filter/ipv4-filter/entry[sequence-id={acl_seq}]',
-                json.dumps(acl_entry) )]
-    gnmi.set( encoding='json_ietf', update=update )
+    path = f'/acl/cpm-filter/ipv4-filter/entry[sequence-id={acl_seq}]'
+    logging.info(f"Update: {path}={acl_entry}")
+    gnmi.set( encoding='json_ietf', update=[(path,acl_entry)] )
 
 class State(object):
     def __init__(self):
         self.role = None        # May not be set in config
+        self.acl_seq = 1000     # Starting index
         self.pending_peers = {} # LLDP data received before we can determine ID
 
     def __str__(self):
@@ -373,6 +398,7 @@ def Run():
     app_id = get_app_id(agent_name)
     if not app_id:
         logging.error(f'idb does not have the appId for {agent_name} : {app_id}')
+        sys.exit(-1)
     else:
         logging.info(f'Got appId {app_id} for {agent_name}')
 
