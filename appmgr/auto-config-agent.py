@@ -311,7 +311,9 @@ def Gnmi_subscribe_bgp_changes(state):
                     # 'path': '/srl_nokia-network-instance:network-instance[name=*]/protocols/srl_nokia-bgp:bgp/neighbor[peer-address=*]/admin-state',
                     # Possible to subscribe without '/admin-state', but then too many events
                     # Like this, no 'delete' is received when the neighbor is deleted
-                    'path': '/network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/admin-state',
+                    # Also, 'enable' event is followed by 'disable' - broken
+                    # 'path': '/network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/admin-state',
+                    'path': '/network-instance[name=*]/protocols/bgp/neighbor[peer-address=*]/peer-group',
                     'mode': 'on_change',
                     # 'heartbeat_interval': 10 * 1000000000 # ns between, i.e. 10s
                     # Mode 'sample' results in polling
@@ -333,51 +335,97 @@ def Gnmi_subscribe_bgp_changes(state):
         try:
           parsed = telemetryParser(m)
           logging.info(f"GOT BGP change event :: {m} parsed={parsed}")
-          if m.HasField('update'):
-            # XXX gets update.delete for deletes, but not when subscribing to /admin-state
-            for u in m.update.update:
-               if u.path and u.path.elem:
-                   for e in u.path.elem:
-                      logging.info(f"Processing path elem {e} name='{e.name}'")
-                      if e.name == "neighbor":
-                         for n,v in e.key.items():
-                             logging.info(f"n={n} v={v}")
-                             if n=="peer-address":
-                                _peer_ip = v
-                                logging.info(f"neighbor {_peer_ip}")
-                                if u.val.string_val == "enable":
-                                   Add_ACL(c,state.acl_seq,_peer_ip)
-                                   state.acl_seq += 1
-                         break
+          root = ((m.update.update if m.HasField('update')) else
+                  (m.delete.update if m.HasField('delete')) else [])
+
+          # XXX gets update.delete for deletes, but not when subscribing to /admin-state
+          for u in root:
+             if u.path and u.path.elem:
+                 for e in u.path.elem:
+                    logging.info(f"Processing path elem {e} name='{e.name}'")
+                    if e.name == "neighbor":
+                       for n,v in e.key.items():
+                           logging.info(f"n={n} v={v}")
+                           if n=="peer-address":
+                              _peer_ip = v
+                              logging.info(f"neighbor {_peer_ip}")
+                              # if u.val.string_val == "enable":
+                              if m.HasField('update'):
+                                 Add_ACL(c,state,_peer_ip)
+                              else:
+                                 Remove_ACL(c,_peer_ip)
+                       break
 
         except Exception as e:
           logging.error(f'Exception caught in gNMI :: {e}')
     logging.info("Leaving BGP event loop")
 
-def Add_ACL(gnmi,acl_seq,peer_ip):
-    acl_entry = {
-      "match": {
-        "protocol": "tcp",
-        "source-ip": {
-            "prefix": peer_ip + '/32'
-        },
-        "destination-port": {
-            "operator": "eq",
-            "value": 179
+def checkIP(ip):
+    try:
+        return (4, '/32' if type(ip_address(ip)) is IPv4Address else
+                6, '/128')
+    except ValueError:
+        return None, None
+
+def Add_ACL(gnmi,state,peer_ip):
+    seq = Find_ACL_entry(gnmi,peer_ip)
+    if seq is None:
+        v, suffix = checkIP(peer_ip)
+
+        seq = state.acl_seq[v]
+        state.acl_seq[v] += 1
+        acl_entry = {
+          "match": {
+            "protocol": "tcp",
+            "source-ip": { "prefix": peer_ip + suffix },
+            "destination-port": { "operator": "eq", "value": 179 }
+          },
+          "action": { "accept": { } }
         }
-      },
-      "action": {
-        "accept": { }
-      }
-    }
-    path = f'/acl/cpm-filter/ipv4-filter/entry[sequence-id={acl_seq}]'
-    logging.info(f"Update: {path}={acl_entry}")
-    gnmi.set( encoding='json_ietf', update=[(path,acl_entry)] )
+        path = f'/acl/cpm-filter/ipv{v}-filter/entry[sequence-id={acl_seq}]'
+        logging.info(f"Update: {path}={acl_entry}")
+        gnmi.set( encoding='json_ietf', update=[(path,acl_entry)] )
+
+def Remove_ACL(gnmi,peer_ip):
+   seq = Find_ACL_entry(gnmi,peer_ip)
+   if seq is not None:
+       logging.info(f"Deleting ACL entry :: {seq}")
+       v = checkIP(peer_ip)
+       path = f'/acl/cpm-filter/ipv{v}-filter/entry[sequence-id={seq}]'
+       gnmi.set( encoding='json_ietf', delete=[path] )
+
+#
+# Because it is possible that ACL entries get saved to 'startup', the agent may
+# not have a full map of sequence number to peer_ip. Therefore, we perform a
+# lookup based on IP address each time
+# Since 'prefix' is not a key, we have to loop through all entries
+#
+def Find_ACL_entry(gnmi,peer_ip):
+
+   # path = '/acl/cpm-filter/ipv4-filter/entry[sequence-id=*]/match/source-ip/prefix'
+   v, suffix = checkIP(peer_ip)
+   path = f'/acl/cpm-filter/ipv{v}-filter/entry/match/source-ip/prefix'
+   acl_entries = gnmi.get( encoding='json_ietf', path=[path] )
+   logging.info(f"GOT Notification :: {acl_entries}")
+   searched = peer_ip + suffix
+   for e in acl_entries['notification']:
+     try:
+        logging.info(f"GOT Update :: {e['update']}")
+        for u in e['update']:
+            for j in u['val']['entry']:
+               logging.info(f"GOT ACL entry :: {j}")
+               prefix = j['match']['source-ip']['prefix']
+               if prefix==searched:
+                   logging.info(f"Found matching entry :: {j}")
+                   return j['sequence-id']
+     except Exception as e:
+        logging.error(f'Exception caught in Find_ACL_entry :: {e}')
+   return None
 
 class State(object):
     def __init__(self):
         self.role = None        # May not be set in config
-        self.acl_seq = 1000     # Starting index
+        self.acl_seq = { 4: 1000, 6: 1000 } # Starting index, todo configurable
         self.pending_peers = {} # LLDP data received before we can determine ID
 
     def __str__(self):
